@@ -57,7 +57,7 @@ public class eteeAPI : MonoBehaviour {
     /// connected.
     /// </summary>
     /// <returns>bool</returns>
-    public bool GetIsConnected()
+    public bool IsDongleDeviceConnected()
     {
         return serialRead.IsDongleConnected();
     }
@@ -78,7 +78,7 @@ public class eteeAPI : MonoBehaviour {
     /// are connected.
     /// </summary>
     /// <returns>bool</returns>
-    public bool IsAllConnected()
+    public bool IsBothDevicesConnected()
     {
         if(serialRead.IsDeviceConnected(0) && serialRead.IsDeviceConnected(1))
         {
@@ -95,7 +95,7 @@ public class eteeAPI : MonoBehaviour {
     /// is connected.
     /// </summary>
     /// <returns>bool</returns>
-    public bool IsAnyConnected()
+    public bool IsAnyDeviceConnected()
     {
         if (serialRead.IsDeviceConnected(0) || serialRead.IsDeviceConnected(1))
         {
@@ -111,7 +111,7 @@ public class eteeAPI : MonoBehaviour {
     /// is connected.
     /// </summary>
     /// <returns>bool</returns>
-    public bool IsLeftConnected()
+    public bool IsLeftDeviceConnected()
     {
         // 0 is used for left device as standard in all the etee api library.
         return serialRead.IsDeviceConnected(0);
@@ -122,7 +122,7 @@ public class eteeAPI : MonoBehaviour {
     /// is connected.
     /// </summary>
     /// <returns>bool</returns>
-    public bool IsRightConnected()
+    public bool IsRightDeviceConnected()
     {
         // 1 us used for right device as standard in all the etee api library.
         return serialRead.IsDeviceConnected(1);
@@ -162,22 +162,13 @@ public class eteeAPI : MonoBehaviour {
     /// the port name as a parameter.
     /// </summary>
     /// <param name="portName">string - name of the port to check</param>
-    public bool GetPortConnect(string portName)
+    public bool CheckPort(string portName)
     {
         if (GetPortName() == portName)
         {
             return true;
         }
         return false;
-    }
-
-    /// <summary>
-    /// Wrapper method to autoconnect
-    /// api method.
-    /// </summary>
-    public bool GetAutoConnect()
-    {
-        return true;
     }
 
     /// <summary>
@@ -194,18 +185,6 @@ public class eteeAPI : MonoBehaviour {
         }
         return true;
     }
-
-    /// <summary>
-    /// Wrapper method for checking
-    /// if the device is in sleep
-    /// mode.
-    /// </summary>
-    /// <param name="device">int - device from where you get the data from. 0 for left and 1 for right</param>
-    public bool IsAsleep(int device)
-    {
-        return false;
-    }
-
 
     // ==================================== Finger ====================================
 
@@ -336,7 +315,7 @@ public class eteeAPI : MonoBehaviour {
     /// </sumamry>
     /// <param name="device">int - device number. Use 0 for left and 1 for right</param>
     /// <returns>Vector2</returns>
-    public Tuple<float, float> GettrackpadPressures(int device)
+    public Tuple<float, float> GetTrackpadPressures(int device)
     {
         // check that parameter is correct.
         if (device > 1 | device < 0)
@@ -799,16 +778,6 @@ public class eteeAPI : MonoBehaviour {
     public void EnableHaptics()
     {
         serialRead.EnableHaptics();
-    }
-
-    /// <summary>
-    /// Sends a vibration haptic to
-    /// the targeted controller.
-    /// </summary>
-    /// <param name="hand">string -  which hand data is being sent.</param>
-    public void VibrateDevice(string hand)
-    {
-        serialRead.SendVibrationsCommands(hand);
     }
 
     /// <summary>
