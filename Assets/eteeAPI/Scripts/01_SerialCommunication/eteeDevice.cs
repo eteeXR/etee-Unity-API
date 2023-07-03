@@ -108,16 +108,16 @@ public class eteeDevice : MonoBehaviour {
     public Tuple<float, float> gripPressures;
 
     public bool pointIndependent;                               // Point Independent gesture boolean
-    public float numeric_Point_Independent;                     // Point Independent gesture analog
+    public float pointIndependentAnalog;                        // Point Independent gesture analog
 
     public bool pointExcludeTrackpad;                           // Point Exclude Trackpad gesture boolean
-    public float numeric_Point_Exclude_Trackpad;                // Point Exclude Trackpad gesture analog
+    public float pointExcludeTrackpadAnalog;                    // Point Exclude Trackpad gesture analog
 
     public bool pinchTrackpad;                                  // Pinch trackpad gesture boolean
-    public float pinchTrackpadPull;                             // Pinch trackpad gesture analog
+    public float pinchTrackpadAnalog;                             // Pinch trackpad gesture analog
 
     public bool pinchThumbFinger;                               // Pinch thumbFinger gesture boolean
-    public float pinchThumbFingerPull;                          // Pinch thumbFinger gesture analog
+    public float pinchThumbFingerAnalog;                          // Pinch thumbFinger gesture analog
 
     [Header("Flags")]
     public bool enable = false;
@@ -805,7 +805,7 @@ public class eteeDevice : MonoBehaviour {
     public void UpdatePinchTrackpadGesture(byte[] serialBuffer)
     {
         pinchTrackpad = IsBitSet(serialBuffer[15], 0);
-        pinchTrackpadPull = SelectBits(serialBuffer[15], 7, 1);
+        pinchTrackpadAnalog = SelectBits(serialBuffer[15], 7, 1);
     }
 
     /// <summary>
@@ -817,7 +817,7 @@ public class eteeDevice : MonoBehaviour {
     public void UpdatePinchThumbFingerGesture(byte[] serialBuffer)
     {
         pinchThumbFinger = IsBitSet(serialBuffer[16], 0);
-        pinchThumbFingerPull = SelectBits(serialBuffer[16], 7, 1);
+        pinchThumbFingerAnalog = SelectBits(serialBuffer[16], 7, 1);
     }
 
     /// <summary>
@@ -896,16 +896,16 @@ public class eteeDevice : MonoBehaviour {
         squeeze = false;
 
         pointIndependent = false;
-        numeric_Point_Independent = 0f;
+        pointIndependentAnalog = 0f;
 
         pointExcludeTrackpad = false;
-        numeric_Point_Exclude_Trackpad = 0f;
+        pointExcludeTrackpadAnalog = 0f;
 
         pinchTrackpad = false;
-        pinchTrackpadPull = 0f;
+        pinchTrackpadAnalog = 0f;
 
         pinchThumbFinger = false;
-        pinchThumbFingerPull = 0f;
+        pinchThumbFingerAnalog = 0f;
 
         // Reset Tracker
         proxClicked = false;
