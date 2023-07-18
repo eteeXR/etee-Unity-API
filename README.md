@@ -191,6 +191,12 @@ With the package imported make sure you switch to the correct API Compatibility 
 1. Go to ***Edit > Project Settings > Player > Other Settings > API Compatibility Level***. 
 2. Switch to the correct .NET compatibility version. If you are developing in Unity version 2021 select ***.NET Framework***. If you are using an older version of Unity you should use ***.NET 4.x*** instead.
 
+<p align="center">
+  <img width="600" src="./Documentation/img/UnityPackage/GIFs/Setup-API.gif">
+  <br/>
+  <em>Ensuring .NET framework compatibility.</em>
+</p>
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- CONTRIBUTING -->
