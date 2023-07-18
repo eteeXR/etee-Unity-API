@@ -70,6 +70,7 @@
         <li><a href="#store-package-installation">Option 2: Install from the Unity Asset Store</a></li>
       </ul>
     </li>
+    <li><a href="#further-information">Further Information</a></li>
     <li><a href="#contributing">Contributing</a>
       <ul>
         <li><a href="#how-to-contribute">How to Contribute</a></li>
@@ -86,7 +87,7 @@
 <!-- ABOUT THE PROJECT -->
 ## About the Project
 
-This API allows developers to easily create applications that interface with the etee finger-tracking controllers. It enables seamless device data reading and communication, streamlining the process of integrating the controllers into your software development workflow.
+The [etee Unity API][url-api-folder] allows developers to easily create applications that interface with the etee finger-tracking controllers. It enables seamless device data reading and communication, streamlining the process of integrating the controllers into your software development workflow.
 
 <p align="center">
   <img width="700" src="./Documentation/img/UnityPackage/GIFs/Editor-HandScene.gif">
@@ -99,7 +100,7 @@ The package contains:
 - **Scenes** - one for basic device communication and one for hand movement visualisation
 - **Assets** - required for basic set-up
 
-The API contains four main scripts:
+The API contains four main device communication scripts:
 - **CsharpSerial.cs** - Retrieves device and port statuses. It also initialises device connection and data streaming commands.
 - **EteeDevice.cs** - Gathers values from the device data packet.
 - **EteeAPI.cs** - Call and retrieves values from the API
@@ -197,6 +198,19 @@ With the package imported make sure you switch to the correct API Compatibility 
   <em>Ensuring .NET framework compatibility.</em>
 </p>
 
+`Note`: To see how to use the API in your custom project, check the [**Usage**][url-usage] section.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+<!-- FURTHER INFORMATION -->
+## Further Information
+
+For more details regarding this API, check the documentation below:
+
+- [Hardware Setup][url-hardware-setup]: How to set up your physical devices.
+- [Usage][url-usage]: How to use the API in your custom project.
+- [Input Data][url-input-data]: List of input data that can be retrieved from the devices.
+
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 <!-- CONTRIBUTING -->
@@ -290,3 +304,7 @@ For further support or queries, you can contact us:
 [url-eteexr-website]: https://eteexr.com/
 [url-semantic-type-prefixes-1]: https://dev.to/puritanic/how-are-you-writing-a-commit-message-1ih7
 [url-semantic-type-prefixes-2]: http://karma-runner.github.io/1.0/dev/git-commit-msg.html
+[url-api-folder]: Assets/eteeAPI/
+[url-hardware-setup]: Documentation/HARDWARE_SETUP.md
+[url-usage]: Documentation/USAGE.md
+[url-input-data]: Documentation/INPUT_DATA.md

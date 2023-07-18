@@ -1,8 +1,10 @@
-# Getting Started
+# How to Use the API
 
 ## Retrieving input data
 
 The `eteeAPI.cs` script allows you to call and retrieve device data using ***Get commands***, such as <GetAllFingersPull()>, which returns each of the fingers pull data from either the left or right device.    
+
+`Note`: For a full list of available device data, check the [**Input Data**][url-input-data] section.
 
 ```
 using System.Collections;
@@ -81,7 +83,7 @@ If the finger curl data or other sensor data seem wrong, the easiest way to fix 
 1. Please, ensure that your or the user’s **fingers are fully stretched** out, as illustrated below.
 
 <p align="center">
-  <img width="300" src="./img/AboutDevice/calibration-position.png">
+  <img width="400" src="./img/AboutDevice/calibration-position.png">
   <br/>
 </p>
 
@@ -93,3 +95,5 @@ If the finger curl data or other sensor data seem wrong, the easiest way to fix 
 </p>
 
 This process is instantaneous and does not require any waiting time.
+
+[url-input-data]: INPUT_DATA.md
