@@ -273,5 +273,129 @@ namespace AHRS
             Quaternion[2] = q3 * norm;
             Quaternion[3] = q4 * norm;
         }
+
+        /// <summary>
+        /// 9-axis Madgwick update with SEPARATE gains for accelerometer and magnetometer.
+        /// 
+        /// accelBeta controls the accelerometer correction strength (pitch/roll gravity alignment).
+        /// magBeta controls the magnetometer correction strength (yaw heading alignment).
+        /// 
+        /// This allows independent tuning:
+        ///   - Keep accelBeta as the existing adaptive value for stable pitch/roll
+        ///   - Use a small magBeta to gently correct yaw drift without causing jitter
+        ///   - Set magBeta=0 to fall back to 6-axis behavior
+        /// </summary>
+        public void UpdateWithSelectiveMag(float gx, float gy, float gz,
+                                            float ax, float ay, float az,
+                                            float mx, float my, float mz,
+                                            float accelBeta, float magBeta)
+        {
+            float q1 = Quaternion[0], q2 = Quaternion[1], q3 = Quaternion[2], q4 = Quaternion[3];
+            float norm;
+
+            // Auxiliary variables
+            float _2q1 = 2f * q1;
+            float _2q2 = 2f * q2;
+            float _2q3 = 2f * q3;
+            float _2q4 = 2f * q4;
+            float _4q1 = 4f * q1;
+            float _4q2 = 4f * q2;
+            float _4q3 = 4f * q3;
+            float _8q2 = 8f * q2;
+            float _8q3 = 8f * q3;
+            float q1q1 = q1 * q1;
+            float q2q2 = q2 * q2;
+            float q3q3 = q3 * q3;
+            float q4q4 = q4 * q4;
+            float q1q2 = q1 * q2;
+            float q1q3 = q1 * q3;
+            float q1q4 = q1 * q4;
+            float q2q3 = q2 * q3;
+            float q2q4 = q2 * q4;
+            float q3q4 = q3 * q4;
+            float _2q1q3 = 2f * q1q3;
+            float _2q3q4 = 2f * q3q4;
+
+            // ---- Accelerometer correction (same as UpdateRelative) ----
+            float sa1 = 0f, sa2 = 0f, sa3 = 0f, sa4 = 0f;
+            norm = (float)Math.Sqrt(ax * ax + ay * ay + az * az);
+            if (norm > 0f)
+            {
+                norm = 1f / norm;
+                ax *= norm;
+                ay *= norm;
+                az *= norm;
+
+                // Gradient descent corrective step for gravity
+                sa1 = _4q1 * q3q3 + _2q3 * ax + _4q1 * q2q2 - _2q2 * ay;
+                sa2 = _4q2 * q4q4 - _2q4 * ax + 4f * q1q1 * q2 - _2q1 * ay - _4q2 + _8q2 * q2q2 + _8q2 * q3q3 + _4q2 * az;
+                sa3 = 4f * q1q1 * q3 + _2q1 * ax + _4q3 * q4q4 - _2q4 * ay - _4q3 + _8q3 * q2q2 + _8q3 * q3q3 + _4q3 * az;
+                sa4 = 4f * q2q2 * q4 - _2q2 * ax + 4f * q3q3 * q4 - _2q3 * ay;
+                norm = 1f / (float)Math.Sqrt(sa1 * sa1 + sa2 * sa2 + sa3 * sa3 + sa4 * sa4);
+                sa1 *= norm;
+                sa2 *= norm;
+                sa3 *= norm;
+                sa4 *= norm;
+            }
+
+            // ---- Magnetometer correction ----
+            float sm1 = 0f, sm2 = 0f, sm3 = 0f, sm4 = 0f;
+            if (magBeta > 0f)
+            {
+                norm = (float)Math.Sqrt(mx * mx + my * my + mz * mz);
+                if (norm > 0f)
+                {
+                    norm = 1f / norm;
+                    mx *= norm;
+                    my *= norm;
+                    mz *= norm;
+
+                    // Reference direction of Earth's magnetic field
+                    float _2q1mx = 2f * q1 * mx;
+                    float _2q1my = 2f * q1 * my;
+                    float _2q1mz = 2f * q1 * mz;
+                    float _2q2mx = 2f * q2 * mx;
+                    float hx = mx * q1q1 - _2q1my * q4 + _2q1mz * q3 + mx * q2q2 + _2q2 * my * q3 + _2q2 * mz * q4 - mx * q3q3 - mx * q4q4;
+                    float hy = _2q1mx * q4 + my * q1q1 - _2q1mz * q2 + _2q2mx * q3 - my * q2q2 + my * q3q3 + _2q3 * mz * q4 - my * q4q4;
+                    float _2bx = (float)Math.Sqrt(hx * hx + hy * hy);
+                    float _2bz = -_2q1mx * q3 + _2q1my * q2 + mz * q1q1 + _2q2mx * q4 - mz * q2q2 + _2q3 * my * q4 - mz * q3q3 + mz * q4q4;
+                    float _4bx = 2f * _2bx;
+                    float _4bz = 2f * _2bz;
+
+                    // Gradient descent corrective step for magnetic field
+                    sm1 = -_2bz * q3 * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (-_2bx * q4 + _2bz * q2) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + _2bx * q3 * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
+                    sm2 = _2bz * q4 * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (_2bx * q3 + _2bz * q1) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + (_2bx * q4 - _4bz * q2) * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
+                    sm3 = (-_4bx * q3 - _2bz * q1) * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (_2bx * q2 + _2bz * q4) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + (_2bx * q1 - _4bz * q3) * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
+                    sm4 = (-_4bx * q4 + _2bz * q2) * (_2bx * (0.5f - q3q3 - q4q4) + _2bz * (q2q4 - q1q3) - mx) + (-_2bx * q1 + _2bz * q3) * (_2bx * (q2q3 - q1q4) + _2bz * (q1q2 + q3q4) - my) + _2bx * q2 * (_2bx * (q1q3 + q2q4) + _2bz * (0.5f - q2q2 - q3q3) - mz);
+                    norm = (float)Math.Sqrt(sm1 * sm1 + sm2 * sm2 + sm3 * sm3 + sm4 * sm4);
+                    if (norm > 0f)
+                    {
+                        norm = 1f / norm;
+                        sm1 *= norm;
+                        sm2 *= norm;
+                        sm3 *= norm;
+                        sm4 *= norm;
+                    }
+                }
+            }
+
+            // ---- Compute rate of change of quaternion ----
+            // Gyro integration + accel correction (accelBeta) + mag correction (magBeta)
+            float qDot1 = 0.5f * (-q2 * gx - q3 * gy - q4 * gz) - accelBeta * sa1 - magBeta * sm1;
+            float qDot2 = 0.5f * (q1 * gx + q3 * gz - q4 * gy) - accelBeta * sa2 - magBeta * sm2;
+            float qDot3 = 0.5f * (q1 * gy - q2 * gz + q4 * gx) - accelBeta * sa3 - magBeta * sm3;
+            float qDot4 = 0.5f * (q1 * gz + q2 * gy - q3 * gx) - accelBeta * sa4 - magBeta * sm4;
+
+            // ---- Integrate to yield quaternion ----
+            q1 += qDot1 * SamplePeriod;
+            q2 += qDot2 * SamplePeriod;
+            q3 += qDot3 * SamplePeriod;
+            q4 += qDot4 * SamplePeriod;
+            norm = 1f / (float)Math.Sqrt(q1 * q1 + q2 * q2 + q3 * q3 + q4 * q4);
+            Quaternion[0] = q1 * norm;
+            Quaternion[1] = q2 * norm;
+            Quaternion[2] = q3 * norm;
+            Quaternion[3] = q4 * norm;
+        }
     }
 }
