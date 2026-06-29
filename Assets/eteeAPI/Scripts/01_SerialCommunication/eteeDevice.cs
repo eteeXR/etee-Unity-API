@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections;
+using System.Linq;
 using UnityEngine;
 using AHRS;
+using IMUPipeline;
 /// <summary>
 /// Gathers values from device data packet using UpdateValue() functions.
 /// </summary>
@@ -68,12 +70,15 @@ public class eteeDevice : MonoBehaviour {
 
     [Header("Raw IMU")]
     public Vector3 accelerometer;                               // Accelerometer data.
+    public Vector3 accelerometerRawInt16;                       // Raw int16 accelerometer data (for pipeline).
 
     public Vector3 gyroscope;                                   // Gyroscope data.
     public bool gyroCalibrated = false;
     public bool gyroCalibrationDone = false;
     private int gyroCalibratingSamples = 700;
     public Vector3 gyroscopeOffsetValues = Vector3.zero;
+
+    public Vector3 gyroscopeRawInt16;                             // Raw int16 gyroscope data (for pipeline).
 
     public Vector3 magnetometer;                                // Magnetometer data.
     public bool magCalibrated = true;
@@ -96,6 +101,47 @@ public class eteeDevice : MonoBehaviour {
     public float samplePeriod = 100f;
     public float beta = 0.0315f;
     private MadgwickAHRS madgwickAHRS;
+
+    // Sensor conversion constants
+    private const float ACCEL_SCALE = 4.0f / 32768.0f;
+    private const float GYRO_SCALE_DPS = 2000.0f / 32768.0f;
+    private const float GYRO_DPS_TO_RPS = Mathf.PI / 180.0f;
+
+    // Per-device gyro bias estimator with ZUPT (replaces old gyro offset)
+    private GyroBiasEstimator gyroBiasEstimator;
+
+    // Shared yaw filter for drift-free yaw (set by CSharpSerial)
+    [HideInInspector]
+    public AnchoredYawFilter sharedYawFilter;
+
+    // Magnetometer calibrator for hard-iron correction + reliability detection
+    private MagCalibrator magCalibrator;
+    private Vector3 magCorrected;
+    private bool magIsReliable;
+
+    // Per-device pitch/roll freeze state
+    private float lastStablePitch;
+    private float lastStableRoll;
+    private bool hasPitchRollSnapshot = false;
+
+    // Persistent yaw offset for drift correction
+    private float persistentYawOffset = 0f;
+
+    // IMU diagnostic counter
+    private int imuDiagCounter = 0;
+
+    // Snapshot-based magnetic yaw drift corrector
+    private MagSnapshotYawCorrector magYawCorrector;
+
+    // Accumulated yaw correction offset (degrees) — applied at output stage, NOT written back to AHRS
+    private float yawCorrectionAccum = 0f;
+
+    // Flag: AHRS quaternion needs gravity initialization from first accel reading
+    private bool ahrsNeedsGravityInit = true;
+
+    // Packet filtering
+    private bool handIdentityEstablished = false;
+    private int misroutedPacketCount = 0;
 
     public float roll;
     public float pitch;
@@ -136,6 +182,11 @@ public class eteeDevice : MonoBehaviour {
         pastRightTapTime = Time.time;
 
         madgwickAHRS = new MadgwickAHRS(1 / samplePeriod, beta);
+        this.gyroBiasEstimator = new GyroBiasEstimator();
+        this.magCalibrator = new MagCalibrator();
+        this.magYawCorrector = new MagSnapshotYawCorrector();
+        this.magCorrected = Vector3.zero;
+        this.magIsReliable = false;
     }
 
 
@@ -147,8 +198,30 @@ public class eteeDevice : MonoBehaviour {
     /// <returns>void</returns>
     public void UpdateValuesFromController(byte[] serialBuffer)
     {
+        bool packetIsLeft = !IsBitSet(serialBuffer[11], 3);
+
+        // Guard: after first valid packet, reject any packet with wrong L/R bit.
+        // This prevents corrupted/mis-routed packets from poisoning AHRS state.
+        if (handIdentityEstablished && packetIsLeft != isLeft)
+        {
+            misroutedPacketCount++;
+            if (misroutedPacketCount <= 5 || misroutedPacketCount % 100 == 0)
+            {
+                string expected = isLeft ? "L" : "R";
+                string got = packetIsLeft ? "L" : "R";
+                Debug.LogWarning($"[eteeDevice-{expected}] Mis-routed packet #{misroutedPacketCount} " +
+                                 $"(got={got}). Discarding to protect AHRS.");
+            }
+            return;
+        }
+
         enable = true;
-        isLeft = !IsBitSet(serialBuffer[11], 3);
+        isLeft = packetIsLeft;
+        if (!handIdentityEstablished)
+        {
+            handIdentityEstablished = true;
+            Debug.Log($"[eteeDevice] Hand identity established: {(isLeft ? "LEFT" : "RIGHT")}");
+        }
 
         // update finger data.
         UpdateFingers(serialBuffer);
@@ -470,42 +543,206 @@ public class eteeDevice : MonoBehaviour {
     // ==================================== Rotation ====================================
 
     /// <summary>
-    /// Measures controller orientation quanternions using
-    /// gyroscope and accelerometer values.
+    /// Measures controller orientation quaternions using multi-stage IMU pipeline:
+    /// Stage 1: Raw int16 → physical units + ZUPT gyro bias correction
+    /// Stage 1.5: Gravity-based AHRS initialization on first frame
+    /// Stage 2: 6-axis Madgwick AHRS with adaptive beta
+    /// Stage 3: Snapshot-based magnetic yaw drift correction
     /// </summary>
     private void EstimateIMUOrientation()
     {
-        // This version uses relative orientation (no magnetometer) to estimate the controllers 3D orientation. This is due to the absolute orientation
-        // drifting too much. While the relative orientation is jittery, the animation is smoothen through lerping
-        madgwickAHRS.UpdateRelative(gyroscope.x, gyroscope.y, gyroscope.z,
-            accelerometer.x, accelerometer.y, accelerometer.z);
+        // ====================================================================
+        // STAGE 1: Convert raw int16 → physical units + bias correction
+        // ====================================================================
+        Vector3 accelG = accelerometerRawInt16 * ACCEL_SCALE;
+        Vector3 gyroDps = gyroscopeRawInt16 * GYRO_SCALE_DPS;
 
-        float q0 = madgwickAHRS.Quaternion[0];
-        float q1 = madgwickAHRS.Quaternion[1];
-        float q2 = madgwickAHRS.Quaternion[2];
-        float q3 = madgwickAHRS.Quaternion[3];
-        roll = (float)Mathf.Atan2(q0 * q1 + q2 * q3, 0.5f - q1 * q1 - q2 * q2) * Mathf.Rad2Deg;
-        pitch = Mathf.Asin(-2.0f * (q1 * q3 - q0 * q2)) * Mathf.Rad2Deg;
-        yaw = (float)Mathf.Atan2(q1 * q2 + q0 * q3, 0.5f - q2 * q2 - q3 * q3) * Mathf.Rad2Deg;
+        // Dynamic gyro bias correction with ZUPT (returns zero when static)
+        Vector3 gyroCorrDps = gyroBiasEstimator.Update(gyroDps, accelG);
+
+        // Convert corrected gyro to rad/s for Madgwick
+        Vector3 gyroRps = gyroCorrDps * GYRO_DPS_TO_RPS;
+
+        // ====================================================================
+        // STAGE 1.5: Initialize AHRS from gravity on first valid accel frame
+        // ====================================================================
+        // AHRS defaults to (1,0,0,0) which has NO gravity alignment.
+        // Fix: compute initial quaternion from accel so pitch/roll are
+        // correct from frame 1. Yaw stays arbitrary (no heading ref yet).
+        if (ahrsNeedsGravityInit && accelG.sqrMagnitude > 0.5f)
+        {
+            Vector3 a = accelG.normalized;
+            float dot = a.z;
+            float qw, qx, qy, qz;
+
+            if (dot < -0.999f)
+            {
+                qw = 0f; qx = 1f; qy = 0f; qz = 0f;
+            }
+            else
+            {
+                qw = 1f + dot;
+                qx = a.y;
+                qy = -a.x;
+                qz = 0f;
+            }
+
+            float qNorm = Mathf.Sqrt(qw * qw + qx * qx + qy * qy + qz * qz);
+            if (qNorm > 0.001f)
+            {
+                qNorm = 1f / qNorm;
+                madgwickAHRS.Quaternion[0] = qw * qNorm;
+                madgwickAHRS.Quaternion[1] = qx * qNorm;
+                madgwickAHRS.Quaternion[2] = qy * qNorm;
+                madgwickAHRS.Quaternion[3] = qz * qNorm;
+                string hand = isLeft ? "L" : "R";
+                Debug.Log($"[AHRS-{hand}] Gravity-init from accel: ({a.x:F3}, {a.y:F3}, {a.z:F3})");
+            }
+            ahrsNeedsGravityInit = false;
+        }
+
+        // ====================================================================
+        // STAGE 2: 6-axis Madgwick AHRS with adaptive beta
+        // ====================================================================
+        float gyroMag = gyroCorrDps.magnitude;
+        float adaptiveBeta;
+
+        if (gyroCorrDps.sqrMagnitude < 0.001f)
+        {
+            if (gyroBiasEstimator.IsSettling)
+                adaptiveBeta = 0.003f;   // Settling: gentle gravity correction
+            else
+                adaptiveBeta = 0f;       // Fully static: freeze
+        }
+        else if (gyroMag < 50f)
+        {
+            adaptiveBeta = beta;
+        }
+        else
+        {
+            adaptiveBeta = beta * Mathf.Clamp01(1.0f - (gyroMag - 50f) / 250f);
+            adaptiveBeta = Mathf.Max(adaptiveBeta, 0.001f);
+        }
+
+        madgwickAHRS.Beta = adaptiveBeta;
+        madgwickAHRS.SamplePeriod = 1f / samplePeriod;
+        madgwickAHRS.UpdateRelative(gyroRps.x, gyroRps.y, gyroRps.z,
+            accelG.x, accelG.y, accelG.z);
+
+        float q0 = madgwickAHRS.Quaternion[0]; // w
+        float q1 = madgwickAHRS.Quaternion[1]; // x
+        float q2 = madgwickAHRS.Quaternion[2]; // y
+        float q3 = madgwickAHRS.Quaternion[3]; // z
+
+        // ====================================================================
+        // STAGE 3: Snapshot-based magnetic yaw correction
+        // ====================================================================
+        imuDiagCounter++;
+        string handLabel0 = isLeft ? "L" : "R";
+        if (magCalibrator.IsMagnetometerPresent && magCalibrator.IsCalibrated)
+        {
+            float pitchRad = Mathf.Asin(Mathf.Clamp(-2f * (q1 * q3 - q0 * q2), -1f, 1f));
+            float rollRad  = Mathf.Atan2(2f * (q0 * q1 + q2 * q3), 1f - 2f * (q1 * q1 + q2 * q2));
+
+            float cosPitch = Mathf.Cos(pitchRad);
+            float sinPitch = Mathf.Sin(pitchRad);
+            float cosRoll  = Mathf.Cos(rollRad);
+            float sinRoll  = Mathf.Sin(rollRad);
+
+            float mx = magCorrected.x;
+            float my = magCorrected.y;
+            float mz = magCorrected.z;
+            float magX = mx * cosPitch + mz * sinPitch;
+            float magY = mx * sinRoll * sinPitch + my * cosRoll - mz * sinRoll * cosPitch;
+
+            float magHeading = Mathf.Atan2(-magY, magX) * Mathf.Rad2Deg;
+            float ahrsYaw    = Mathf.Atan2(2f * (q0 * q3 + q1 * q2),
+                                           1f - 2f * (q2 * q2 + q3 * q3)) * Mathf.Rad2Deg;
+
+            string handLabel = isLeft ? "L" : "R";
+            float accelDev   = Mathf.Abs(accelG.magnitude - 1f);
+
+            float yawCorrection = magYawCorrector.Update(
+                magHeading, ahrsYaw, gyroMag,
+                magCalibrator.IsCalibrated, magIsReliable,
+                gyroBiasEstimator.IsSettling, handLabel, accelDev);
+
+            // Lock/unlock MagCalibrator based on corrector state
+            var snapState = magYawCorrector.CurrentState;
+            if (snapState == MagSnapshotYawCorrector.State.Moving ||
+                snapState == MagSnapshotYawCorrector.State.CollectingPost ||
+                snapState == MagSnapshotYawCorrector.State.Correcting)
+            {
+                magCalibrator.Lock();
+            }
+            else
+            {
+                magCalibrator.Unlock();
+            }
+
+            // Accumulate correction (do NOT write back to AHRS — prevents fight-back)
+            if (Mathf.Abs(yawCorrection) > 0.001f)
+            {
+                yawCorrectionAccum += yawCorrection;
+            }
+
+            if (imuDiagCounter % 200 == 0)
+            {
+                Debug.Log($"[IMU-{handLabel}] ahrsY={ahrsYaw:F1} magH={magHeading:F1} " +
+                          $"state={magYawCorrector.CurrentState} " +
+                          $"drift={magYawCorrector.DetectedDrift:F1} " +
+                          $"remaining={magYawCorrector.RemainingCorrection:F1} " +
+                          $"yawAccum={yawCorrectionAccum:F1} " +
+                          $"gyro={gyroMag:F1}");
+            }
+        }
+        else if (imuDiagCounter % 1000 == 1)
+        {
+            Debug.LogWarning($"[IMU-{handLabel0}] Stage 3 SKIPPED: " +
+                $"magPresent={magCalibrator.IsMagnetometerPresent}, " +
+                $"magCalibrated={magCalibrator.IsCalibrated}");
+        }
+
+        // ====================================================================
+        // Update roll/pitch/yaw from AHRS quaternion
+        // ====================================================================
+        roll  = Mathf.Atan2(2f * (q0 * q1 + q2 * q3), 1f - 2f * (q1 * q1 + q2 * q2)) * Mathf.Rad2Deg;
+        pitch = Mathf.Asin(Mathf.Clamp(-2f * (q1 * q3 - q0 * q2), -1f, 1f)) * Mathf.Rad2Deg;
+        yaw   = Mathf.Atan2(2f * (q0 * q3 + q1 * q2), 1f - 2f * (q2 * q2 + q3 * q3)) * Mathf.Rad2Deg;
+
+        // ====================================================================
+        // Map to Unity coordinate system + apply finger curl offset
+        // ====================================================================
+        float fingerAVG = ((index.Item1 + index.Item2) / 2 +
+            (middle.Item1 + middle.Item2) / 2 +
+            (ring.Item1 + ring.Item2) / 2 +
+            (pinky.Item1 + pinky.Item2) / 2) / 4;
+        fingerAVG = 45f * fingerAVG / 90f;
+
+        // Apply accumulated yaw correction in earth-frame BEFORE coordinate mapping.
+        // Uses PRE-multiply (q_yaw × q_ahrs) to rotate around earth Z-axis.
+        // This guarantees zero pitch/roll leakage regardless of hand tilt.
+        if (Mathf.Abs(yawCorrectionAccum) > 0.01f)
+        {
+            float halfYaw = yawCorrectionAccum * Mathf.Deg2Rad * 0.5f;
+            float sy = Mathf.Sin(halfYaw);
+            float cy = Mathf.Cos(halfYaw);
+
+            float cq0 = cy * q0 - sy * q3;
+            float cq1 = cy * q1 - sy * q2;
+            float cq2 = cy * q2 + sy * q1;
+            float cq3 = sy * q0 + cy * q3;
+
+            q0 = cq0; q1 = cq1; q2 = cq2; q3 = cq3;
+        }
 
         if (!isLeft)
         {
-            float fingerAVG = ((index.Item1 + index.Item2) / 2 +
-                (middle.Item1 + middle.Item2) / 2 +
-                (ring.Item1 + ring.Item2) / 2 +
-                (pinky.Item1 + pinky.Item2) / 2) / 4;
-            fingerAVG = 45f * fingerAVG / 90f;
-
             quaternions = new Quaternion(-q2, q1, q3, q0) * Quaternion.Euler(0, fingerAVG - 45f, 0);
             euler = quaternions.eulerAngles;
         }
         else
         {
-            float fingerAVG = ((index.Item1 + index.Item2) / 2 +
-                (middle.Item1 + middle.Item2) / 2 +
-                (ring.Item1 + ring.Item2) / 2 +
-                (pinky.Item1 + pinky.Item2) / 2) / 4;
-            fingerAVG = 45f * fingerAVG / 90f;
             quaternions = new Quaternion(q2, -q1, q3, q0) * Quaternion.Euler(0, fingerAVG - 45f, 0);
             euler = quaternions.eulerAngles;
         }
@@ -532,6 +769,9 @@ public class eteeDevice : MonoBehaviour {
         short y = (short)(((accelerometerData[3]) << 8) + accelerometerData[2]);
         short z = (short)(((accelerometerData[5]) << 8) + accelerometerData[4]);
 
+        // Store raw int16 values for the IMU pipeline
+        accelerometerRawInt16 = new Vector3(x, y, z);
+
         // convert data and build 3D vector.
         accelerometer = new Vector3(unchecked(x * 4.0f / 32768.0f),
                                           unchecked(y * 4.0f / 32768.0f),
@@ -557,7 +797,10 @@ public class eteeDevice : MonoBehaviour {
         short y = (short)(((gyroscopeData[3]) << 8) + gyroscopeData[2]);
         short z = (short)(((gyroscopeData[5]) << 8) + gyroscopeData[4]);
 
-        // convert data and build 3D vector.
+        // Store raw int16 values for the IMU pipeline
+        gyroscopeRawInt16 = new Vector3(x, y, z);
+
+        // convert data and build 3D vector (also used for CalibrateGyro and other consumers)
         if (gyroCalibrated)
         {
             gyroscope = new Vector3(unchecked(x * Mathf.Deg2Rad * 2000.0f / 32768.0f),
@@ -593,9 +836,13 @@ public class eteeDevice : MonoBehaviour {
         short z = (short)(((magnetometerData[4]) << 8) + magnetometerData[5]);
 
         // convert data and build 3D vector.
-        magnetometer = new Vector3(unchecked(x * 0.38f),
-                                          unchecked(y * 0.38f),
-                                          unchecked(z * 0.61f));
+        // MLX90393 sensitivity: XY=0.376 µT/LSB, Z=0.605 µT/LSB
+        magnetometer = new Vector3(unchecked(x * 0.376f),
+                                          unchecked(y * 0.376f),
+                                          unchecked(z * 0.605f));
+
+        // Feed into MagCalibrator for hard-iron correction + reliability detection
+        magCorrected = magCalibrator.Update(magnetometer, out magIsReliable);
 
 
         if (!magCalibrated)
@@ -918,6 +1165,12 @@ public class eteeDevice : MonoBehaviour {
         gyroscope = new Vector3(0f, 0f, 0f);
         magnetometer = new Vector3(0f, 0f, 0f);
         quaternions = new Quaternion(0f, 0f, 0f, 0f);
+        yawCorrectionAccum = 0f;
+        // Reset MagSnapshot baseline so it re-captures after orientation reset
+        if (magYawCorrector != null)
+            magYawCorrector.ResetBaseline();
+        // Re-initialize AHRS gravity from next accel reading
+        ahrsNeedsGravityInit = true;
 
         // Reset others
         battery = 0f;
