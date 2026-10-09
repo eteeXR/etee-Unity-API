@@ -8,6 +8,7 @@ using System.Text.RegularExpressions;
 using System.IO;
 using System.Linq;
 using UnityEngine.Analytics;
+using IMUPipeline;
 
 /// <summary>
 /// Retrieves device and port statuses. Also initialises 
@@ -77,9 +78,11 @@ public class CSharpSerial : MonoBehaviour {
     [Header("IMU Offsets")]
     public Vector3 gyroLeftOffset;
     public Vector3 gyroRightOffset;
-
     public Vector3 magLeftOffset;
     public Vector3 magRightOffset;
+
+    // Shared yaw filter for drift-free yaw (shared between both devices)
+    private AnchoredYawFilter sharedYawFilter;
 
 
     // Start is called before the first frame update
@@ -144,6 +147,11 @@ public class CSharpSerial : MonoBehaviour {
 
         // get current user operative system to detect the port where the dongle is connected.
         os = (int)System.Environment.OSVersion.Platform;
+
+        // Create the shared yaw filter for drift-free yaw tracking
+        sharedYawFilter = new AnchoredYawFilter();
+        if (leftDevice != null) leftDevice.sharedYawFilter = sharedYawFilter;
+        if (rightDevice != null) rightDevice.sharedYawFilter = sharedYawFilter;
 
         // start separate thread to read data from the dongle.
         StartThread();
